@@ -1,4 +1,4 @@
-name: List All Repos & Mark Stale Branches
+name: List All Repos & Mark Stale Branches (Public & Private)
 
 on:
   workflow_dispatch:
@@ -13,31 +13,31 @@ jobs:
 
       - name: Fetch Repositories, Branches & Last Build Dates
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret is set
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret is set with "repo" scope
           ORG_NAME: "lalitsudhakar"  # Change to your GitHub username or organization
         run: |
-          echo "Repo Name,Branch Name,Last Build Date,Status" > repo_list.csv
+          echo "Repo Name,Visibility,Branch Name,Last Build Date,Status" > repo_list.csv
           page=1
           THIRTY_DAYS_AGO=$(date -d "30 days ago" --utc +%s)
 
           while true; do
             response=$(curl -s -H "Authorization: token $GH_TOKEN" \
                               -H "Accept: application/vnd.github.v3+json" \
-                              "https://api.github.com/users/$ORG_NAME/repos?per_page=100&page=$page")
+                              "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=$page&type=all")
 
             if [[ -z "$response" ]] || echo "$response" | jq -e 'has("message")' > /dev/null; then
               echo "❌ Error fetching repositories. Response: $response"
               exit 1
             fi
 
-            repos=$(echo "$response" | jq -r '.[].name')
+            repos=$(echo "$response" | jq -r '.[] | "\(.name),\(.visibility)"')
 
             if [[ -z "$repos" ]]; then
               break
             fi
 
-            for repo in $repos; do
-              echo "🔍 Processing repository: $repo"
+            while IFS=, read -r repo visibility; do
+              echo "🔍 Processing repository: $repo ($visibility)"
 
               branches=$(curl -s -H "Authorization: token $GH_TOKEN" \
                                 -H "Accept: application/vnd.github.v3+json" \
@@ -63,9 +63,9 @@ jobs:
                   fi
                 fi
 
-                echo "$repo,$branch,$last_build,$status" >> repo_list.csv
+                echo "$repo,$visibility,$branch,$last_build,$status" >> repo_list.csv
               done
-            done
+            done <<< "$repos"
 
             ((page++))
           done
