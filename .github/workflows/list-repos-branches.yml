@@ -1,30 +1,29 @@
-name: List Last Build Date for Repositories
+name: List Repos, Branches & Last Build Date
 
 on:
   workflow_dispatch:
 
 jobs:
-  list_last_builds:
+  list_repo_branches:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch Last Build Date for Repositories
+      - name: Fetch Repositories, Branches & Last Build Dates
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret is set in GitHub
-          ORG_NAME: "lalitsudhakar"  # Change to your username or organization
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret is set
+          ORG_NAME: "lalitsudhakar"  # Change this to your GitHub username or organization
         run: |
-          echo "Repo Name, Last Build Date" > repo_list.csv
-
+          echo "Repo Name,Branch Name,Last Build Date" > repo_list.csv
           page=1
+
           while true; do
             response=$(curl -s -H "Authorization: token $GH_TOKEN" \
                               -H "Accept: application/vnd.github.v3+json" \
-                              "https://api.github.com/user/repos?per_page=100&page=$page")
+                              "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=$page")
 
-            # Check if API response is empty or contains an error
             if [[ -z "$response" ]] || echo "$response" | jq -e 'has("message")' > /dev/null; then
               echo "Error fetching repositories. Response: $response"
               exit 1
@@ -32,7 +31,6 @@ jobs:
 
             repos=$(echo "$response" | jq -r '.[] | .name')
 
-            # Break if no more repositories
             if [[ -z "$repos" ]]; then
               break
             fi
@@ -40,16 +38,23 @@ jobs:
             for repo in $repos; do
               echo "Processing repository: $repo"
 
-              # Get last build date from GitHub Actions
-              last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
-                                    -H "Accept: application/vnd.github.v3+json" \
-                                    "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?per_page=1" | jq -r '.workflow_runs[0].updated_at')
+              branches=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                                -H "Accept: application/vnd.github.v3+json" \
+                                "https://api.github.com/repos/$ORG_NAME/$repo/branches" | jq -r '.[].name')
 
-              if [[ "$last_build" == "null" ]] || [[ -z "$last_build" ]]; then
-                last_build="No Builds"
-              fi
+              for branch in $branches; do
+                echo "  Processing branch: $branch"
 
-              echo "$repo, $last_build" >> repo_list.csv
+                last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                                      -H "Accept: application/vnd.github.v3+json" \
+                                      "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?branch=$branch&per_page=1" | jq -r '.workflow_runs[0].updated_at')
+
+                if [[ "$last_build" == "null" ]] || [[ -z "$last_build" ]]; then
+                  last_build="No Builds"
+                fi
+
+                echo "$repo,$branch,$last_build" >> repo_list.csv
+              done
             done
 
             ((page++))
@@ -60,5 +65,5 @@ jobs:
       - name: Upload CSV Report
         uses: actions/upload-artifact@v4
         with:
-          name: repo_list_report
+          name: repo_branch_list_report
           path: repo_list.csv
