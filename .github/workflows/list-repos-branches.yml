@@ -1,39 +1,40 @@
-name: List Repos, Branches & Last Build Date
+name: Find Stale Repositories in GitHub Organization (30 Days)
 
 on:
   workflow_dispatch:
 
 jobs:
-  list_repo_branches:
+  find_stale_repos:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch Repositories, Branches & Last Build Dates
+      - name: Fetch Stale Repositories Report
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret is set
-          ORG_NAME: "lalitsudhakar"  # Change to your GitHub username or organization
+          ORG_NAME: "lalitsudhakar"  # Change this to your GitHub organization name
+          STALE_DAYS: 30  # Threshold set to 30 days
         run: |
-          echo "Repo Name,Branch Name,Last Build Date" > repo_list.csv
+          echo "Repo Name, Last Commit Date, Last Build Date, Stars, Forks, Open Issues, Open PRs, Visibility, Archived, URL" > stale_repos.csv
           page=1
 
           while true; do
-            # Fetch repositories (Supports user or organization)
+            # Fetch repositories in the organization
             response=$(curl -s -H "Authorization: token $GH_TOKEN" \
                               -H "Accept: application/vnd.github.v3+json" \
-                              "https://api.github.com/users/$ORG_NAME/repos?per_page=100&page=$page")
+                              "https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=$page")
 
-            # Check if API response is empty or contains an error
+            # Error handling for API failure
             if [[ -z "$response" ]] || echo "$response" | jq -e 'has("message")' > /dev/null; then
               echo "❌ Error fetching repositories. Response: $response"
               exit 1
             fi
 
-            repos=$(echo "$response" | jq -r '.[].name')
+            repos=$(echo "$response" | jq -r '.[] | .name')
 
-            # Break if no more repositories
+            # Break if no repositories found
             if [[ -z "$repos" ]]; then
               break
             fi
@@ -41,36 +42,54 @@ jobs:
             for repo in $repos; do
               echo "🔍 Processing repository: $repo"
 
-              # Fetch all branches for the repository
-              branches=$(curl -s -H "Authorization: token $GH_TOKEN" \
-                                -H "Accept: application/vnd.github.v3+json" \
-                                "https://api.github.com/repos/$ORG_NAME/$repo/branches" | jq -r '.[].name')
-
-              for branch in $branches; do
-                echo "  🔹 Processing branch: $branch"
-
-                # Fetch the last build date for the branch
-                last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              # Get last commit date
+              last_commit=$(curl -s -H "Authorization: token $GH_TOKEN" \
                                       -H "Accept: application/vnd.github.v3+json" \
-                                      "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?branch=$branch&per_page=1" \
+                                      "https://api.github.com/repos/$ORG_NAME/$repo/commits?per_page=1" \
+                                      | jq -r '.[0].commit.committer.date')
+
+              # Get last GitHub Actions build date
+              last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                                      -H "Accept: application/vnd.github.v3+json" \
+                                      "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?per_page=1" \
                                       | jq -r '.workflow_runs[0].updated_at')
 
-                # Handle cases where no builds exist
-                if [[ "$last_build" == "null" ]] || [[ -z "$last_build" ]]; then
-                  last_build="No Builds"
-                fi
+              # Get repository metadata (stars, forks, issues, PRs, visibility, archived status)
+              repo_details=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                                    -H "Accept: application/vnd.github.v3+json" \
+                                    "https://api.github.com/repos/$ORG_NAME/$repo")
 
-                echo "$repo,$branch,$last_build" >> repo_list.csv
-              done
+              stars=$(echo "$repo_details" | jq -r '.stargazers_count')
+              forks=$(echo "$repo_details" | jq -r '.forks_count')
+              open_issues=$(echo "$repo_details" | jq -r '.open_issues_count')
+              archived=$(echo "$repo_details" | jq -r '.archived')
+              visibility=$(echo "$repo_details" | jq -r '.visibility')
+              repo_url=$(echo "$repo_details" | jq -r '.html_url')
+
+              # Get open pull requests count
+              open_prs=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                                -H "Accept: application/vnd.github.v3+json" \
+                                "https://api.github.com/repos/$ORG_NAME/$repo/pulls?state=open" \
+                                | jq -r 'length')
+
+              # If last commit is older than STALE_DAYS, consider it stale
+              last_commit_timestamp=$(date -d "$last_commit" +%s 2>/dev/null || echo 0)
+              current_timestamp=$(date +%s)
+              age_days=$(( (current_timestamp - last_commit_timestamp) / 86400 ))
+
+              if [[ "$age_days" -gt "$STALE_DAYS" ]]; then
+                echo "❗ Stale repository found: $repo (Last Commit: $last_commit)"
+                echo "$repo,$last_commit,$last_build,$stars,$forks,$open_issues,$open_prs,$visibility,$archived,$repo_url" >> stale_repos.csv
+              fi
             done
 
             ((page++))
           done
 
-          echo "✅ Report generated: repo_list.csv"
+          echo "✅ Stale repository report generated: stale_repos.csv"
 
       - name: Upload CSV Report
         uses: actions/upload-artifact@v4
         with:
-          name: repo_branch_list_report
-          path: repo_list.csv
+          name: stale_repo_report
+          path: stale_repos.csv
