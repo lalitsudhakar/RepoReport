@@ -1,97 +1,79 @@
-name: Find Stale Repositories
+name: List All Repos & Mark Stale Branches
 
 on:
   workflow_dispatch:
 
 jobs:
-  find_stale_repos:
+  list_repos_mark_stale:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fetch Stale Repositories
+      - name: Fetch Repositories, Branches & Last Build Dates
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret is set
-          ORG_NAME: "lalitsudhakar"  # Change to your organization, or leave empty for user repos
+          ORG_NAME: "lalitsudhakar"  # Change to your GitHub username or organization
         run: |
-          echo "Repo Name, Last Commit Date, Last Build Date, Stars, Forks, Open Issues, Open PRs, Visibility, Archived, URL" > stale_repos.csv
-          
+          echo "Repo Name,Branch Name,Last Build Date,Status" > repo_list.csv
           page=1
-          today=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          cutoff_date=$(date -u -d "30 days ago" +"%Y-%m-%dT%H:%M:%SZ")
+          THIRTY_DAYS_AGO=$(date -d "30 days ago" --utc +%s)
 
           while true; do
-            # Determine API URL
-            if [[ -n "$ORG_NAME" ]]; then
-              API_URL="https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=$page"
-            else
-              API_URL="https://api.github.com/user/repos?per_page=100&page=$page"
-            fi
-
             response=$(curl -s -H "Authorization: token $GH_TOKEN" \
-                              -H "Accept: application/vnd.github.v3+json" "$API_URL")
+                              -H "Accept: application/vnd.github.v3+json" \
+                              "https://api.github.com/users/$ORG_NAME/repos?per_page=100&page=$page")
 
-            # Handle API error
             if [[ -z "$response" ]] || echo "$response" | jq -e 'has("message")' > /dev/null; then
-              echo "Error fetching repositories. Response: $response"
+              echo "❌ Error fetching repositories. Response: $response"
               exit 1
             fi
 
-            repos=$(echo "$response" | jq -r '.[] | @base64')
+            repos=$(echo "$response" | jq -r '.[].name')
 
-            # Break if no more repositories
             if [[ -z "$repos" ]]; then
               break
             fi
 
-            for repo_data in $repos; do
-              repo=$(echo "$repo_data" | base64 --decode | jq -r '.name')
-              repo_url=$(echo "$repo_data" | base64 --decode | jq -r '.html_url')
-              visibility=$(echo "$repo_data" | base64 --decode | jq -r '.visibility')
-              archived=$(echo "$repo_data" | base64 --decode | jq -r '.archived')
-              stars=$(echo "$repo_data" | base64 --decode | jq -r '.stargazers_count')
-              forks=$(echo "$repo_data" | base64 --decode | jq -r '.forks_count')
-              issues=$(echo "$repo_data" | base64 --decode | jq -r '.open_issues_count')
+            for repo in $repos; do
+              echo "🔍 Processing repository: $repo"
 
-              # Get last commit date
-              last_commit=$(curl -s -H "Authorization: token $GH_TOKEN" \
-                                     -H "Accept: application/vnd.github.v3+json" \
-                                     "https://api.github.com/repos/$ORG_NAME/$repo/commits?per_page=1" | jq -r '.[0].commit.author.date')
-
-              if [[ "$last_commit" == "null" ]] || [[ -z "$last_commit" ]]; then
-                last_commit="No Commits"
-              fi
-
-              # Get last build date
-              last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
-                                     -H "Accept: application/vnd.github.v3+json" \
-                                     "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?per_page=1" | jq -r '.workflow_runs[0].updated_at')
-
-              if [[ "$last_build" == "null" ]] || [[ -z "$last_build" ]]; then
-                last_build="No Builds"
-              fi
-
-              # Get open PR count
-              open_prs=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              branches=$(curl -s -H "Authorization: token $GH_TOKEN" \
                                 -H "Accept: application/vnd.github.v3+json" \
-                                "https://api.github.com/repos/$ORG_NAME/$repo/pulls?state=open&per_page=1" | jq -r '. | length')
+                                "https://api.github.com/repos/$ORG_NAME/$repo/branches" | jq -r '.[].name')
 
-              # Check if repo is stale (last commit > 30 days)
-              if [[ "$last_commit" < "$cutoff_date" ]]; then
-                echo "$repo,$last_commit,$last_build,$stars,$forks,$issues,$open_prs,$visibility,$archived,$repo_url" >> stale_repos.csv
-                echo "✔ Stale repository: $repo (Last Commit: $last_commit)"
-              fi
+              for branch in $branches; do
+                echo "  🔹 Processing branch: $branch"
+
+                last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                                      -H "Accept: application/vnd.github.v3+json" \
+                                      "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?branch=$branch&per_page=1" \
+                                      | jq -r '.workflow_runs[0].updated_at')
+
+                if [[ "$last_build" == "null" ]] || [[ -z "$last_build" ]]; then
+                  last_build="No Builds"
+                  status="Stale"
+                else
+                  last_build_timestamp=$(date -d "$last_build" --utc +%s)
+                  if [[ $last_build_timestamp -lt $THIRTY_DAYS_AGO ]]; then
+                    status="Stale"
+                  else
+                    status="Active"
+                  fi
+                fi
+
+                echo "$repo,$branch,$last_build,$status" >> repo_list.csv
+              done
             done
 
             ((page++))
           done
 
-          echo "Report generated: stale_repos.csv"
+          echo "✅ Report generated: repo_list.csv"
 
-      - name: Upload Stale Repositories Report
+      - name: Upload CSV Report
         uses: actions/upload-artifact@v4
         with:
-          name: stale_repos_report
-          path: stale_repos.csv
+          name: repo_branch_list_report
+          path: repo_list.csv
