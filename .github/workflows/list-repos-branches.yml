@@ -14,19 +14,20 @@ jobs:
       - name: Fetch Repositories, Branches & Last Build Dates
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret has "repo" scope
-          ORG_NAME: "lalitsudhakar"  # Change to your GitHub username or organization
+          ORG_NAME: "lalitsudhakar"  # Change to your GitHub username or organization (leave empty if personal repo)
         run: |
           echo "Repo Name,Visibility,Branch Name,Last Build Date,Status" > repo_list.csv
           page=1
           THIRTY_DAYS_AGO=$(date -d "30 days ago" --utc +%s)
 
-          while true; do
-            if [[ -n "$ORG_NAME" ]]; then
-              API_URL="https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=$page&type=all"
-            else
-              API_URL="https://api.github.com/user/repos?per_page=100&page=$page&visibility=all"
-            fi
+          # Automatically determine API URL based on ORG_NAME presence
+          if [[ -n "$ORG_NAME" ]]; then
+            API_URL="https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=$page&type=all"
+          else
+            API_URL="https://api.github.com/user/repos?per_page=100&page=$page&visibility=all"
+          fi
 
+          while true; do
             response=$(curl -s -H "Authorization: token $GH_TOKEN" \
                               -H "Accept: application/vnd.github.v3+json" \
                               "$API_URL")
