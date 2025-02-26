@@ -13,7 +13,7 @@ jobs:
 
       - name: Fetch Last Build Date for Repositories
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret is set in GitHub
           ORG_NAME: "lalitsudhakar"  # Change to your username or organization
         run: |
           echo "Repo Name, Last Build Date" > repo_list.csv
