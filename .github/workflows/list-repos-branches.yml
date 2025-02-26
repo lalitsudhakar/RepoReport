@@ -1,4 +1,4 @@
-name: List All Repos & Mark Stale Branches (Public & Private)
+name: List All Repos & Mark Stale Branches (Public & Private) with Logs
 
 on:
   workflow_dispatch:
@@ -13,27 +13,24 @@ jobs:
 
       - name: Fetch Repositories, Branches & Last Build Dates
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}  # Ensure this secret has "repo" scope
-          ORG_NAME: "lalitsudhakar"  # Change to your GitHub username or organization (leave empty if personal repo)
+          GH_PAT: ${{ secrets.GH_PAT }}  # Use a Personal Access Token (PAT) with repo scope
         run: |
           echo "Repo Name,Visibility,Branch Name,Last Build Date,Status" > repo_list.csv
+          echo "==== LOGS ====" > logs.txt  # File to store detailed logs
           page=1
           THIRTY_DAYS_AGO=$(date -d "30 days ago" --utc +%s)
-
-          # Automatically determine API URL based on ORG_NAME presence
-          if [[ -n "$ORG_NAME" ]]; then
-            API_URL="https://api.github.com/orgs/$ORG_NAME/repos?per_page=100&page=$page&type=all"
-          else
-            API_URL="https://api.github.com/user/repos?per_page=100&page=$page&visibility=all"
-          fi
+          API_URL="https://api.github.com/user/repos?per_page=100&page=$page&visibility=all"
 
           while true; do
-            response=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            response=$(curl -s -H "Authorization: token $GH_PAT" \
                               -H "Accept: application/vnd.github.v3+json" \
                               "$API_URL")
 
+            echo "Fetching page: $page" >> logs.txt
+            echo "$response" >> logs.txt  # Store API response in logs.txt
+
             if [[ -z "$response" ]] || echo "$response" | jq -e 'has("message")' > /dev/null; then
-              echo "❌ Error fetching repositories. Response: $response"
+              echo "❌ Error fetching repositories. Response: $response" | tee -a logs.txt
               exit 1
             fi
 
@@ -44,18 +41,18 @@ jobs:
             fi
 
             while IFS=, read -r repo visibility; do
-              echo "🔍 Processing repository: $repo ($visibility)"
+              echo "🔍 Processing repository: $repo ($visibility)" | tee -a logs.txt
 
-              branches=$(curl -s -H "Authorization: token $GH_TOKEN" \
+              branches=$(curl -s -H "Authorization: token $GH_PAT" \
                                 -H "Accept: application/vnd.github.v3+json" \
-                                "https://api.github.com/repos/$ORG_NAME/$repo/branches" | jq -r '.[].name')
+                                "https://api.github.com/repos/$repo/branches" | jq -r '.[].name')
 
               for branch in $branches; do
-                echo "  🔹 Processing branch: $branch"
+                echo "  🔹 Processing branch: $branch" | tee -a logs.txt
 
-                last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                last_build=$(curl -s -H "Authorization: token $GH_PAT" \
                                       -H "Accept: application/vnd.github.v3+json" \
-                                      "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?branch=$branch&per_page=1" \
+                                      "https://api.github.com/repos/$repo/actions/runs?branch=$branch&per_page=1" \
                                       | jq -r '.workflow_runs[0].updated_at')
 
                 if [[ "$last_build" == "null" ]] || [[ -z "$last_build" ]]; then
@@ -77,10 +74,12 @@ jobs:
             ((page++))
           done
 
-          echo "✅ Report generated: repo_list.csv"
+          echo "✅ Report generated: repo_list.csv" | tee -a logs.txt
 
-      - name: Upload CSV Report
+      - name: Upload CSV & Logs
         uses: actions/upload-artifact@v4
         with:
           name: repo_branch_list_report
-          path: repo_list.csv
+          path: |
+            repo_list.csv
+            logs.txt
