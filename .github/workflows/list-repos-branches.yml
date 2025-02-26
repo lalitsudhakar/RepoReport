@@ -1,0 +1,66 @@
+name: List Repos, Branches & Last Build Status
+
+on:
+  workflow_dispatch:
+
+jobs:
+  list_repos:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+
+      - name: Fetch Repositories, Branches & Last Build Status
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+          ORG_NAME: "lalitsudhakar"  # Change to your username or organization
+        run: |
+          echo "Repo Name, Branch Name, Last Build Date, Older Than 1 Month" > repo_list.csv
+
+          # Get all repositories
+          repos=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                      -H "Accept: application/vnd.github.v3+json" \
+                      "https://api.github.com/user/repos?per_page=100" | jq -r '.[].name')
+
+          for repo in $repos; do
+            echo "Processing repository: $repo"
+
+            # Get all branches
+            branches=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                              -H "Accept: application/vnd.github.v3+json" \
+                              "https://api.github.com/repos/$ORG_NAME/$repo/branches" | jq -r '.[].name')
+
+            for branch in $branches; do
+              echo "  Checking branch: $branch"
+
+              # Get last build date from GitHub Actions
+              last_build=$(curl -s -H "Authorization: token $GH_TOKEN" \
+                                    -H "Accept: application/vnd.github.v3+json" \
+                                    "https://api.github.com/repos/$ORG_NAME/$repo/actions/runs?branch=$branch&per_page=1" | jq -r '.workflow_runs[0].updated_at')
+
+              if [[ "$last_build" == "null" ]]; then
+                last_build="No Builds"
+                older_than_1_month="N/A"
+              else
+                last_build_date=$(date -d "$last_build" +%s)
+                one_month_ago=$(date -d "1 month ago" +%s)
+
+                if [[ $last_build_date -lt $one_month_ago ]]; then
+                  older_than_1_month="Yes"
+                else
+                  older_than_1_month="No"
+                fi
+              fi
+
+              echo "$repo, $branch, $last_build, $older_than_1_month" >> repo_list.csv
+            done
+          done
+
+          echo "Report generated: repo_list.csv"
+
+      - name: Upload CSV Report
+        uses: actions/upload-artifact@v3
+        with:
+          name: repo_list_report
+          path: repo_list.csv
