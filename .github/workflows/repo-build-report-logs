@@ -1,4 +1,4 @@
-name: List Repos and Branches with Last Build & Mark Stale Branches with Logs
+name: List Repos and Branches with Last Build & Mark Stale Branches with Configurable Days
 
 on:
   workflow_dispatch: # Allows manual triggering of the workflow
@@ -22,6 +22,7 @@ jobs:
       - name: Generate CSV Report
         env:
           PERSONAL_ACCESS_TOKEN: ${{ secrets.REPO_BUILD_REPORT_TOKEN_DEV }} # Use PAT stored as secret
+          STALE_DAYS: 30 # Configure the number of days for a branch to be considered stale
         shell: python
         run: |
           from github import Github
@@ -36,7 +37,8 @@ jobs:
 
           report_data = []
           today_date = datetime.now(timezone.utc)
-          thirty_days_ago = today_date - timedelta(days=30)
+          stale_days = int(os.environ.get("STALE_DAYS"))
+          days_ago = today_date - timedelta(days=stale_days)
           log_file = "logs.txt"
 
           with open(log_file, "w") as f:
@@ -47,7 +49,7 @@ jobs:
                   f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} - {message}\n")
               print(message)
 
-          log_message("Starting workflow to generate repository build report with stale branch detection.")
+          log_message(f"Starting workflow with stale days configured to: {stale_days}")
 
           # Ensure all repositories are retrieved
           repos = []
@@ -94,7 +96,7 @@ jobs:
                                   build_url = last_workflow_run.html_url
                                   build_status = last_workflow_run.conclusion.capitalize() if last_workflow_run.conclusion else "In Progress"
                                   days_since_last_build = (today_date - last_workflow_run.created_at).days
-                                  stale_status = "Active" if last_workflow_run.created_at > thirty_days_ago else "Stale"
+                                  stale_status = "Active" if last_workflow_run.created_at > days_ago else "Stale"
                                   log_message(f"    Last build on {last_build_date_utc}, Status: {build_status}, URL: {build_url}, Days ago: {days_since_last_build}, Stale: {stale_status}")
 
                                   report_data.append({
@@ -171,7 +173,7 @@ jobs:
           git push origin main  # Change 'main' to your branch if needed
 
       - name: Upload CSV & Logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v3
         with:
           name: repo_branch_report
           path: |
