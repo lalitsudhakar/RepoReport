@@ -1,0 +1,179 @@
+name: List Repos and Branches with Last Build & Mark Stale Branches with Logs
+
+on:
+  workflow_dispatch: # Allows manual triggering of the workflow
+
+jobs:
+  generate_csv_report:
+    runs-on: gev-linux-small # Change to 'ubuntu-latest' or any specific runner label
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install PyGithub
+        run: pip install PyGithub
+
+      - name: Generate CSV Report
+        env:
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.REPO_BUILD_REPORT_TOKEN_DEV }} # Use PAT stored as secret
+        shell: python
+        run: |
+          from github import Github
+          import os
+          import csv
+          from datetime import datetime, timezone, timedelta
+
+          PERSONAL_ACCESS_TOKEN = os.environ.get("PERSONAL_ACCESS_TOKEN")
+          GITHUB_ENTERPRISE_URL = "https://github.apps.gevernova.net/api/v3"
+          g = Github(base_url=GITHUB_ENTERPRISE_URL, login_or_token=PERSONAL_ACCESS_TOKEN)
+          user = g.get_user()
+
+          report_data = []
+          today_date = datetime.now(timezone.utc)
+          thirty_days_ago = today_date - timedelta(days=30)
+          log_file = "logs.txt"
+
+          with open(log_file, "w") as f:
+              f.write("==== Workflow Logs ====\n")
+
+          def log_message(message):
+              with open(log_file, "a") as f:
+                  f.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} - {message}\n")
+              print(message)
+
+          log_message("Starting workflow to generate repository build report with stale branch detection.")
+
+          # Ensure all repositories are retrieved
+          repos = []
+          try:
+              for repo in user.get_repos():
+                  repos.append(repo)
+              log_message(f"Successfully retrieved {len(repos)} repositories.")
+          except Exception as e:
+              log_message(f"Error retrieving repositories: {e}")
+
+          for repo in repos:
+              try:
+                  log_message(f"Processing Repository: {repo.name}")
+                  repo_visibility = "Private" if repo.private else "Public"
+                  log_message(f"  Visibility: {repo_visibility}")
+                  branches = repo.get_branches()
+                  log_message(f"  Found {branches.totalCount} branches.")
+
+                  if branches.totalCount == 0:
+                      report_data.append({
+                          'Repo Name': repo.name,
+                          'Repo Visibility': repo_visibility,
+                          'Branch Name': "No Branches",
+                          'Workflow Name': "N/A",
+                          'Last Build Date': "N/A",
+                          'Build Status': "N/A",
+                          'Build URL': "N/A",
+                          'Days Since Last Build': "N/A",
+                          'Stale Status': "Stale" # Mark as stale if no branches
+                      })
+                  else:
+                      for branch in branches:
+                          branch_name = branch.name
+                          log_message(f"  Processing branch: {branch_name}")
+                          try:
+                              workflow_runs = repo.get_workflow_runs(branch=branch_name)
+                              log_message(f"    Found {workflow_runs.totalCount} workflow runs for this branch.")
+                              last_workflow_run = workflow_runs.get_page(0)[0] if workflow_runs.totalCount > 0 else None
+
+                              if last_workflow_run:
+                                  workflow_id = last_workflow_run.workflow_id
+                                  workflow_name = repo.get_workflow(workflow_id).name if workflow_id else "Unknown Workflow"
+                                  last_build_date_utc = last_workflow_run.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')
+                                  build_url = last_workflow_run.html_url
+                                  build_status = last_workflow_run.conclusion.capitalize() if last_workflow_run.conclusion else "In Progress"
+                                  days_since_last_build = (today_date - last_workflow_run.created_at).days
+                                  stale_status = "Active" if last_workflow_run.created_at > thirty_days_ago else "Stale"
+                                  log_message(f"    Last build on {last_build_date_utc}, Status: {build_status}, URL: {build_url}, Days ago: {days_since_last_build}, Stale: {stale_status}")
+
+                                  report_data.append({
+                                      'Repo Name': repo.name,
+                                      'Repo Visibility': repo_visibility,
+                                      'Branch Name': branch_name,
+                                      'Workflow Name': workflow_name,
+                                      'Last Build Date': last_build_date_utc,
+                                      'Build Status': build_status,
+                                      'Build URL': build_url,
+                                      'Days Since Last Build': days_since_last_build,
+                                      'Stale Status': stale_status
+                                  })
+                              else:
+                                  log_message("    No workflow runs found for this branch.")
+                                  report_data.append({
+                                      'Repo Name': repo.name,
+                                      'Repo Visibility': repo_visibility,
+                                      'Branch Name': branch_name,
+                                      'Workflow Name': "No workflows",
+                                      'Last Build Date': "No builds yet",
+                                      'Build Status': "No builds yet",
+                                      'Build URL': "N/A",
+                                      'Days Since Last Build': "N/A",
+                                      'Stale Status': "Stale" # Mark as stale if no builds yet
+                                  })
+
+                          except Exception as branch_error:
+                              log_message(f"    Error processing branch {branch_name}: {branch_error}")
+                              report_data.append({
+                                  'Repo Name': repo.name,
+                                  'Repo Visibility': repo_visibility,
+                                  'Branch Name': branch_name,
+                                  'Workflow Name': "Error fetching workflow",
+                                  'Last Build Date': "Error",
+                                  'Build Status': "Error",
+                                  'Build URL': "N/A",
+                                  'Days Since Last Build': "N/A",
+                                  'Stale Status': "Error"
+                              })
+              except Exception as repo_error:
+                  log_message(f"Error processing repo {repo.name}: {repo_error}")
+                  report_data.append({
+                      'Repo Name': repo.name,
+                      'Repo Visibility': "N/A",
+                      'Branch Name': "N/A",
+                      'Workflow Name': "Error processing repo",
+                      'Last Build Date': "Error",
+                      'Build Status': "Error",
+                      'Build URL': "N/A",
+                      'Days Since Last Build': "N/A",
+                      'Stale Status': "Error"
+                  })
+
+          # Write to CSV file
+          csv_file_path = "repo_build_report.csv"
+          with open(csv_file_path, mode='w', newline='', encoding='utf-8') as csvfile:
+              fieldnames = ['Repo Name', 'Repo Visibility', 'Branch Name', 'Workflow Name',
+                            'Last Build Date', 'Build Status', 'Build URL',
+                            'Days Since Last Build', 'Stale Status']
+              writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+              writer.writeheader()
+              writer.writerows(report_data)
+
+          log_message(f"CSV report generated at: {csv_file_path}")
+          log_message("Workflow execution finished.")
+
+      - name: Commit and Push CSV to Repo
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add repo_build_report.csv logs.txt
+          git commit -m "Add repo build report CSV and logs"
+          git push origin main  # Change 'main' to your branch if needed
+
+      - name: Upload CSV & Logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo_branch_report
+          path: |
+            repo_build_report.csv
+            logs.txt
